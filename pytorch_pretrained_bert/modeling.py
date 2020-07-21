@@ -1028,9 +1028,17 @@ class BertForPreTrainingLossMask(PreTrainedBertModel):
                                        nn.ReLU(),
                                        nn.Linear(config.hidden_size*2, 3129)) # 3129 hard coded...
             self.vqa2_crit = nn.BCEWithLogitsLoss()
+        elif tasks == 'hm':
+            self.ans_classifier = nn.Sequential(nn.Linear(config.hidden_size, config.hidden_size*2),
+                                       nn.ReLU(),
+                                       nn.Linear(config.hidden_size*2, 2)) # 2 hard coded...
+            self.hm_crit = nn.BCEWithLogitsLoss()
 
 
-    def forward(self, vis_feats, vis_pe, input_ids, token_type_ids=None, attention_mask=None, masked_lm_labels=None, ans_labels=None, next_sentence_label=None, masked_pos=None, masked_weights=None, task_idx=None, vis_masked_pos=[], mask_image_regions=False, drop_worst_ratio=0.2, vqa_inference=False):
+    def forward(self, vis_feats, vis_pe, input_ids, token_type_ids=None, attention_mask=None, masked_lm_labels=None,
+                ans_labels=None, next_sentence_label=None, masked_pos=None, masked_weights=None, task_idx=None,
+                vis_masked_pos=[], mask_image_regions=False, drop_worst_ratio=0.2,
+                vqa_inference=False, hm_inference=False):
 
         vis_feats = self.vis_embed(vis_feats) # image region features
         vis_pe = self.vis_pe_embed(vis_pe) # image region positional encodings
@@ -1045,6 +1053,18 @@ class BertForPreTrainingLossMask(PreTrainedBertModel):
             vqa2_pred = self.ans_classifier(vqa2_embed)
             ans_idx = torch.max(vqa2_pred[:, 1:], -1)[1] + 1
             return ans_idx
+        # HM inference
+        elif hm_inference:
+            assert (ans_labels == None)
+            sequence_output, pooled_output = self.bert(vis_feats, vis_pe, input_ids, token_type_ids,
+                                                       attention_mask, output_all_encoded_layers=False,
+                                                       len_vis_input=self.len_vis_input)
+
+            hm_embed = sequence_output[:, 0] * sequence_output[:, self.len_vis_input + 1]
+            hm_pred = self.ans_classifier(hm_embed)
+            probs = F.softmax(hm_pred, -1)
+            proba, label = probs[:, 1], probs.argmax(1)
+            return proba, label
 
         # zero out vis_masked_pos
         if mask_image_regions:
@@ -1139,6 +1159,14 @@ class BertForPreTrainingLossMask(PreTrainedBertModel):
             vqa2_pred = self.ans_classifier(vqa2_embed)
             vqa2_loss = self.vqa2_crit(vqa2_pred, ans_labels) * ans_labels.size(1) # should not avg over answer dimension
             return masked_lm_loss.new(1).fill_(0), vis_pretext_loss, vqa2_loss # works better when combined with max_pred=1
+        elif self.tasks == 'hm':
+            assert (ans_labels is not None)
+            # hm_embed = pooled_output
+            hm_embed = sequence_output[:, 0] * sequence_output[:, self.len_vis_input + 1]
+            hm_pred = self.ans_classifier(hm_embed)
+            target = torch.eye(2)[ans_labels].cuda() # to work with BCE loss format
+            hm_loss = self.hm_crit(hm_pred, target) * target.size(1)  # should not avg over answer dimension
+            return masked_lm_loss.new(1).fill_(0), vis_pretext_loss, hm_loss  # works better when combined with max_pred=1
         else:
             return masked_lm_loss, vis_pretext_loss, masked_lm_loss.new(1).fill_(0)
 

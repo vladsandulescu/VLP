@@ -29,6 +29,8 @@ import vlp.seq2seq_loader as seq2seq_loader
 from vlp.scst_utils import *
 from misc.data_parallel import DataParallelImbalance
 
+import eval_hm
+
 
 def _get_max_epoch_model(output_dir):
     fn_model_list = glob.glob(os.path.join(output_dir, "model.*.bin"))
@@ -155,7 +157,12 @@ def main():
     parser.add_argument('--image_root', type=str, default='/mnt/dat/COCO/images')
     parser.add_argument('--dataset', default='coco', type=str,
                         help='coco | flickr30k | cc')
-    parser.add_argument('--split', type=str, nargs='+', default=['train', 'restval'])
+    # parser.add_argument('--split', type=str, nargs='+', default=['train', 'dev'])
+    parser.add_argument('--split', type=str, default='train')
+    parser.add_argument('--eval_split', type=str, default='dev',
+                        help="Split name for the eval dataset.")
+    parser.add_argument('--eval_batch_size', type=int, default=4,
+                        help="Batch size for evaluation.")
 
     parser.add_argument('--world_size', default = 1, type = int,
                         help = 'number of distributed processes')
@@ -179,7 +186,7 @@ def main():
     parser.add_argument('--region_bbox_file', default='coco_detection_vg_thresh0.2_feat_gvd_checkpoint_trainvaltest.h5', type=str)
     parser.add_argument('--region_det_file_prefix', default='feat_cls_1000/coco_detection_vg_100dets_gvd_checkpoint_trainval', type=str)
     parser.add_argument('--tasks', default='img2txt',
-                        help='img2txt | vqa2')
+                        help='img2txt | vqa2 | hm')
     parser.add_argument('--relax_projection',
                         action='store_true',
                         help="Use different projection layers for tasks.")
@@ -195,7 +202,7 @@ def main():
     args.dist_url = args.dist_url.replace('[PT_OUTPUT_DIR]', args.output_dir)
 
     # arguments inspection
-    assert(args.tasks in ('img2txt', 'vqa2'))
+    assert(args.tasks in ('img2txt', 'vqa2', 'hm'))
     assert args.enable_butd == True, 'only support region attn! featmap attn deprecated'
     assert (not args.scst) or args.dataset == 'coco', 'scst support on coco only!'
     if args.scst:
@@ -206,7 +213,7 @@ def main():
     if args.enable_butd:
         assert(args.len_vis_input == 100)
         args.region_bbox_file = os.path.join(args.image_root, args.region_bbox_file)
-        args.region_det_file_prefix = os.path.join(args.image_root, args.region_det_file_prefix) if args.dataset in ('cc', 'coco') and args.region_det_file_prefix != '' else ''
+        args.region_det_file_prefix = os.path.join(args.image_root, args.region_det_file_prefix) if args.dataset in ('cc', 'coco', 'hm') and args.region_det_file_prefix != '' else ''
 
     # output config
     os.makedirs(args.output_dir, exist_ok=True)
@@ -271,7 +278,7 @@ def main():
             mode="s2s", len_vis_input=args.len_vis_input,
             vis_mask_prob=args.vis_mask_prob, enable_butd=args.enable_butd,
             region_bbox_file=args.region_bbox_file, region_det_file_prefix=args.region_det_file_prefix,
-            local_rank=args.local_rank, load_vqa_ann=(args.tasks=='vqa2'))]
+            local_rank=args.local_rank, load_vqa_ann=(args.tasks=='vqa2'), load_hm_ann=(args.tasks=='hm'))]
         bi_uni_pipeline.append(seq2seq_loader.Preprocess4Seq2seq(args.max_pred, args.mask_prob,
             list(tokenizer.vocab.keys()), tokenizer.convert_tokens_to_ids, args.max_seq_length,
             new_segment_ids=args.new_segment_ids, truncate_config={
@@ -280,7 +287,7 @@ def main():
             mode="bi", len_vis_input=args.len_vis_input,
             vis_mask_prob=args.vis_mask_prob, enable_butd=args.enable_butd,
             region_bbox_file=args.region_bbox_file, region_det_file_prefix=args.region_det_file_prefix,
-            local_rank=args.local_rank, load_vqa_ann=(args.tasks=='vqa2')))
+            local_rank=args.local_rank, load_vqa_ann=(args.tasks=='vqa2'), load_hm_ann=(args.tasks=='hm')))
 
         train_dataset = seq2seq_loader.Img2txtDataset(
             args.src_file, args.image_root, args.split, args.train_batch_size,
@@ -604,6 +611,7 @@ def main():
             if args.world_size > 1:
                 torch.distributed.barrier()
 
+            eval_hm.validate(i_epoch, output_model_file, args, logger)
 
 if __name__ == "__main__":
     main()
