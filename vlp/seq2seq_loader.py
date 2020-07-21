@@ -62,7 +62,9 @@ def truncate_tokens_pair(tokens_a, tokens_b, max_len, max_len_a=0, max_len_b=0, 
 class Img2txtDataset(torch.utils.data.Dataset):
     """ Load image-sentence pairs """
 
-    def __init__(self, file_src, image_root, split, batch_size, tokenizer, max_len, file_valid_jpgs='tmp.json', use_num_imgs=-1, short_sampling_prob=0.1, sent_reverse_order=False, bi_uni_pipeline=[], s2s_prob=1, bi_prob=0, enable_butd=False, tasks='img2txt'):
+    def __init__(self, file_src, image_root, split, batch_size, tokenizer, max_len, file_valid_jpgs='tmp.json',
+                 use_num_imgs=-1, short_sampling_prob=0.1, sent_reverse_order=False,
+                 bi_uni_pipeline=[], s2s_prob=1, bi_prob=0, enable_butd=False, tasks='img2txt'):
         super().__init__()
         self.tokenizer = tokenizer  # tokenize function
         self.max_len = max_len  # maximum length of tokens
@@ -74,6 +76,10 @@ class Img2txtDataset(torch.utils.data.Dataset):
         self.bi_prob = bi_prob
         print('Sample seq2seq {} and bidirectional {}'.format(self.s2s_prob, self.bi_prob))
         assert(self.s2s_prob + self.bi_prob == 1)
+
+        self.test_mode = (split == 'test')
+        self.image_sets = [iset.strip() for iset in split.split('+')]
+        self.data_sets = [os.path.join(file_src[0], '{}.jsonl'.format(iset)) for iset in self.image_sets]
 
         # read the file into memory
         self.ex_list = []
@@ -154,6 +160,18 @@ class Img2txtDataset(torch.utils.data.Dataset):
                         ans_tk = {'answers': img_dat[i]['answers']}
                         self.ex_list.append((src_tk, tgt_tk, ans_tk))
                         counter += 1
+        elif tasks == 'hm':
+            for file_s in self.data_sets:
+                data = [json.loads(line, parse_int=self.parse_img_id)
+                             for line in open(file_s).read().splitlines()]
+                for item in data:
+                    if enable_butd:
+                        src_tk = os.path.join(image_root, item['id'] + '.png')
+                    else:
+                        raise NotImplementedError
+                    text_tk = tokenizer.tokenize(item['text'])
+                    label_tk = {'label': item['label']} if not self.test_mode else {'label': None}
+                    self.ex_list.append((src_tk, text_tk, label_tk))
 
         print('Load {0} documents'.format(len(self.ex_list)))
 
@@ -175,11 +193,23 @@ class Img2txtDataset(torch.utils.data.Dataset):
             # To Tensor
             yield batch_list_to_batch_tensors(batch)
 
+    def parse_img_id(self, x):
+        # this will break when other fields are also len 4 but you do want an int
+        if len(x) < 4:
+            return int(x)
+        elif len(x) == 4:
+            return "0" + str(x)
+        else:
+            return str(x)
+
 
 class Preprocess4Seq2seq(Pipeline):
     """ Pre-processing steps for pretraining transformer """
 
-    def __init__(self, max_pred, mask_prob, vocab_words, indexer, max_len=512, block_mask=False, new_segment_ids=False, truncate_config={}, mask_image_regions=False, mode="s2s", len_vis_input=49, vis_mask_prob=0.25, enable_butd=False, region_bbox_file='', region_det_file_prefix='', local_rank=-1, load_vqa_ann=False):
+    def __init__(self, max_pred, mask_prob, vocab_words, indexer, max_len=512, block_mask=False, new_segment_ids=False,
+                 truncate_config={}, mask_image_regions=False, mode="s2s", len_vis_input=49, vis_mask_prob=0.25,
+                 enable_butd=False, region_bbox_file='', region_det_file_prefix='', local_rank=-1,
+                 load_vqa_ann=False, load_hm_ann=False, test_mode=False):
         super().__init__()
         self.max_pred = max_pred  # max tokens of prediction
         self.mask_prob = mask_prob  # masking probability
@@ -206,6 +236,9 @@ class Preprocess4Seq2seq(Pipeline):
 
         self.len_vis_input = len_vis_input
         self.vis_mask_prob = vis_mask_prob
+
+        self.load_hm_ann = load_hm_ann
+        self.test_mode = test_mode
 
         # for images
         self.enable_butd = enable_butd
@@ -322,12 +355,23 @@ class Preprocess4Seq2seq(Pipeline):
             img_id = img_path.split('/')[-1].split('.')[0]
             if self.region_det_file_prefix != '':
                 # read data from h5 files
-                with h5py.File(self.region_det_file_prefix+'_feat'+img_id[-3:] +'.h5', 'r') as region_feat_f, \
-                        h5py.File(self.region_det_file_prefix+'_cls'+img_id[-3:] +'.h5', 'r') as region_cls_f, \
-                        h5py.File(self.region_bbox_file, 'r') as region_bbox_f:
-                    img = torch.from_numpy(region_feat_f[img_id][:]).float()
-                    cls_label = torch.from_numpy(region_cls_f[img_id][:]).float()
-                    vis_pe = torch.from_numpy(region_bbox_f[img_id][:])
+                if not self.load_hm_ann and os.path.isfile(self.region_det_file_prefix+'_feat'+img_id[-3:] +'.h5'):
+                    with h5py.File(self.region_det_file_prefix+'_feat'+img_id[-3:] +'.h5', 'r') as region_feat_f, \
+                            h5py.File(self.region_det_file_prefix+'_cls'+img_id[-3:] +'.h5', 'r') as region_cls_f, \
+                            h5py.File(self.region_bbox_file, 'r') as region_bbox_f:
+                        img = torch.from_numpy(region_feat_f[img_id][:]).float()
+                        cls_label = torch.from_numpy(region_cls_f[img_id][:]).float()
+                        vis_pe = torch.from_numpy(region_bbox_f[img_id][:])
+                elif self.load_hm_ann and os.path.isfile(self.region_det_file_prefix+'_feat.h5'):
+                    with h5py.File(self.region_det_file_prefix+'_feat.h5', 'r') as region_feat_f, \
+                            h5py.File(self.region_det_file_prefix+'_cls.h5', 'r') as region_cls_f, \
+                            h5py.File(self.region_bbox_file, 'r') as region_bbox_f:
+                        img = torch.from_numpy(region_feat_f[img_id][:]).float()
+                        cls_label = torch.from_numpy(region_cls_f[img_id][:]).float()
+                        vis_pe = torch.from_numpy(region_bbox_f[img_id][:])
+                else:
+                    raise ValueError("Invalid file prefix path or hm task not specified correctly: %s, "
+                                     "cannot find any matching files" % self.region_det_file_prefix)
             else:
                 # legacy, for some datasets, read data from numpy files
                 img = torch.from_numpy(np.load(img_path))
@@ -347,16 +391,25 @@ class Preprocess4Seq2seq(Pipeline):
 
             vis_pe = torch.cat((vis_pe[:, :4], rel_area.view(-1, 1), vis_pe[:, 5:]), -1) # confident score
             normalized_coord = F.normalize(vis_pe.data[:, :5]-0.5, dim=-1)
+
             vis_pe = torch.cat((F.layer_norm(vis_pe, [6]), \
                 F.layer_norm(cls_label, [1601])), dim=-1) # 1601 hard coded...
 
             # process answer
-            if self.ans_proc:
-                ans_tk = self.ans_proc(instance[2])['answers_scores']
-            else:
-                ans_tk = img.new(1)
+            if not self.test_mode:
+                if self.load_hm_ann:
+                    ans_tk = torch.tensor(instance[2]['label'])
+                elif self.ans_proc:
+                    ans_tk = self.ans_proc(instance[2])['answers_scores']
+                else:
+                    ans_tk = img.new(1)
 
-        return (input_ids, segment_ids, input_mask, masked_ids, masked_pos, masked_weights, -1, self.task_idx, img, vis_masked_pos, vis_pe, ans_tk)
+        if not self.test_mode:
+            return (input_ids, segment_ids, input_mask, masked_ids, masked_pos, masked_weights, -1, self.task_idx, img,
+                    vis_masked_pos, vis_pe, ans_tk)
+        else:
+            return (input_ids, segment_ids, input_mask, masked_ids, masked_pos, masked_weights, -1, self.task_idx, img,
+                    vis_masked_pos, vis_pe)
 
 
 class Preprocess4Seq2seqDecoder(Pipeline):
