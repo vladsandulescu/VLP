@@ -173,12 +173,12 @@ def validate_set(epoch_num, eval_model_recover_path, args, logger, validation_se
                     if validation_set == 'dev':
                         for ind, (img, target) in enumerate(buf_id):
                             img_id = img.replace('../../data/img/', '').replace('.png', '')
-                            predictions.append({'img_id': img_id, 'proba': proba[ind], 'label': label[ind],
+                            predictions.append({'id': img_id, 'proba': proba[ind], 'label': label[ind],
                                                 'target': target['label']})
                     elif validation_set == 'test':
                         for ind, img in enumerate(buf_id):
                             img_id = img.replace('../../data/img/', '').replace('.png', '')
-                            predictions.append({'img_id': img_id, 'proba': proba[ind], 'label': label[ind]})
+                            predictions.append({'id': img_id, 'proba': proba[ind], 'label': label[ind]})
                     else:
                         raise ValueError('Incorrect evaluation split.')
 
