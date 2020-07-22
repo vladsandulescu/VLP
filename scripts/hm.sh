@@ -11,7 +11,7 @@ python ./vlp/run_img2txt_dist.py \
   --region_bbox_file ../../data/imgfeat/region_feat_gvd_wo_bgd/raw_bbox/hm_detection_vg_100dets_vlp_checkpoint_trainval_bbox.h5 \
   --dataset hm \
   --do_train \
-  --split train \
+  --split train+dev \
   --eval_split dev \
   --train_batch_size 64 \
   --eval_batch_size 4 \
