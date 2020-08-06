@@ -1031,7 +1031,7 @@ class BertForPreTrainingLossMask(PreTrainedBertModel):
         elif tasks == 'hm':
             self.ans_classifier = nn.Sequential(nn.Linear(config.hidden_size, config.hidden_size*2),
                                        nn.ReLU(),
-                                       nn.Linear(config.hidden_size*2, 2)) # 2 hard coded...
+                                       nn.Linear(config.hidden_size*2, 1))
             self.hm_crit = nn.BCEWithLogitsLoss()
 
 
@@ -1061,9 +1061,9 @@ class BertForPreTrainingLossMask(PreTrainedBertModel):
                                                        len_vis_input=self.len_vis_input)
 
             hm_embed = sequence_output[:, 0] * sequence_output[:, self.len_vis_input + 1]
-            hm_pred = self.ans_classifier(hm_embed)
-            probs = F.softmax(hm_pred, -1)
-            proba, label = probs[:, 1], probs.argmax(1)
+            hm_pred = self.ans_classifier(hm_embed).squeeze(1)
+            probs = torch.sigmoid(hm_pred)
+            proba, label = probs, (probs > .5).to(dtype=torch.int)
             return proba, label
 
         # zero out vis_masked_pos
@@ -1163,9 +1163,9 @@ class BertForPreTrainingLossMask(PreTrainedBertModel):
             assert (ans_labels is not None)
             # hm_embed = pooled_output
             hm_embed = sequence_output[:, 0] * sequence_output[:, self.len_vis_input + 1]
-            hm_pred = self.ans_classifier(hm_embed)
-            target = torch.eye(2)[ans_labels].cuda() # to work with BCE loss format
-            hm_loss = self.hm_crit(hm_pred, target) * target.size(1)  # should not avg over answer dimension
+            hm_pred = self.ans_classifier(hm_embed).squeeze(1)
+            target = ans_labels.cuda()
+            hm_loss = self.hm_crit(hm_pred, target.to(dtype=hm_pred.dtype)) * target.size(0)  # should not avg over answer dimension
             return masked_lm_loss.new(1).fill_(0), vis_pretext_loss, hm_loss  # works better when combined with max_pred=1
         else:
             return masked_lm_loss, vis_pretext_loss, masked_lm_loss.new(1).fill_(0)
