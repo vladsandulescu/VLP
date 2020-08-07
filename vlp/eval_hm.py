@@ -185,7 +185,6 @@ def validate_set(epoch_num, eval_model_recover_path, args, logger, validation_se
                 pbar.update(1)
 
         results = pd.DataFrame(predictions)
-        results.proba = results.proba.round(4)
         if validation_set == 'dev':
             acc = (results.target == results.label).sum()/len(results)
             auroc = np.round(roc_auc_score(results.target.values, results.proba.values), 4)
@@ -193,4 +192,5 @@ def validate_set(epoch_num, eval_model_recover_path, args, logger, validation_se
             print("Epoch {}: Val Acc = {}, Val AUROC = {}".format(epoch_num, acc, auroc))
 
         results_file = os.path.join(args.output_dir, 'hm-results-'+model_recover_path.split('/')[-2])+'-'+validation_set+'-'+model_recover_path.split('/')[-1].split('.')[-2]+'.csv'
+        results.proba = results.proba.round(4)
         results.to_csv(results_file, header=True, index=False)
