@@ -185,6 +185,7 @@ def validate_set(epoch_num, eval_model_recover_path, args, logger, validation_se
                 pbar.update(1)
 
         results = pd.DataFrame(predictions)
+        results.proba = results.proba.round(4)
         if validation_set == 'dev':
             acc = (results.target == results.label).sum()/len(results)
             auroc = np.round(roc_auc_score(results.target.values, results.proba.values), 4)
