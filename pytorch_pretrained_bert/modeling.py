@@ -1029,10 +1029,10 @@ class BertForPreTrainingLossMask(PreTrainedBertModel):
                                        nn.Linear(config.hidden_size*2, 3129)) # 3129 hard coded...
             self.vqa2_crit = nn.BCEWithLogitsLoss()
         elif tasks == 'hm':
-            self.ans_classifier = nn.Sequential(nn.Linear(config.hidden_size, config.hidden_size*2),
-                                       nn.ReLU(),
-                                       nn.Linear(config.hidden_size*2, 1))
-            self.hm_crit = nn.BCEWithLogitsLoss()
+            self.ans_classifier = nn.Sequential(nn.Linear(config.hidden_size, config.hidden_size),
+                                       nn.Dropout(config.hidden_dropout_prob),
+                                       nn.Linear(config.hidden_size, 2))
+            self.hm_crit = nn.CrossEntropyLoss()
 
 
     def forward(self, vis_feats, vis_pe, input_ids, token_type_ids=None, attention_mask=None, masked_lm_labels=None,
@@ -1060,10 +1060,10 @@ class BertForPreTrainingLossMask(PreTrainedBertModel):
                                                        attention_mask, output_all_encoded_layers=False,
                                                        len_vis_input=self.len_vis_input)
 
-            hm_embed = sequence_output[:, 0] * sequence_output[:, self.len_vis_input + 1]
-            hm_pred = self.ans_classifier(hm_embed).squeeze(1)
-            probs = torch.sigmoid(hm_pred)
-            proba, label = probs, (probs > .5).to(dtype=torch.int)
+            hm_embed = pooled_output
+            hm_pred = self.ans_classifier(hm_embed)
+            probs = F.softmax(hm_pred, dim=1)
+            proba, label = probs[:, 1], probs.argmax(dim=1).to(dtype=torch.int)
             return proba, label
 
         # zero out vis_masked_pos
@@ -1161,11 +1161,10 @@ class BertForPreTrainingLossMask(PreTrainedBertModel):
             return masked_lm_loss.new(1).fill_(0), vis_pretext_loss, vqa2_loss # works better when combined with max_pred=1
         elif self.tasks == 'hm':
             assert (ans_labels is not None)
-            # hm_embed = pooled_output
-            hm_embed = sequence_output[:, 0] * sequence_output[:, self.len_vis_input + 1]
-            hm_pred = self.ans_classifier(hm_embed).squeeze(1)
+            hm_embed = pooled_output
+            hm_pred = self.ans_classifier(hm_embed)
             target = ans_labels.cuda()
-            hm_loss = self.hm_crit(hm_pred, target.to(dtype=hm_pred.dtype)) * target.size(0)  # should not avg over answer dimension
+            hm_loss = self.hm_crit(hm_pred, target)
             return masked_lm_loss.new(1).fill_(0), vis_pretext_loss, hm_loss  # works better when combined with max_pred=1
         else:
             return masked_lm_loss, vis_pretext_loss, masked_lm_loss.new(1).fill_(0)
