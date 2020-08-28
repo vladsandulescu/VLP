@@ -16,6 +16,7 @@ import torch
 import random
 import pickle
 import sys
+import re
 
 from pytorch_pretrained_bert.tokenization import BertTokenizer, WhitespaceTokenizer
 from pytorch_pretrained_bert.modeling import BertForPreTrainingLossMask
@@ -172,12 +173,12 @@ def validate_set(epoch_num, eval_model_recover_path, args, logger, validation_se
                     label = label.detach().cpu().numpy()
                     if validation_set == 'dev':
                         for ind, (img, target) in enumerate(buf_id):
-                            img_id = img.replace('../../data/img/', '').replace('.png', '')
+                            img_id = re.sub(r'^.*?img/', '', img).replace('.png', '')
                             predictions.append({'id': img_id, 'proba': proba[ind], 'label': label[ind],
                                                 'target': target['label']})
                     elif validation_set == 'test':
                         for ind, img in enumerate(buf_id):
-                            img_id = img.replace('../../data/img/', '').replace('.png', '')
+                            img_id = re.sub(r'^.*?img/', '', img).replace('.png', '')
                             predictions.append({'id': img_id, 'proba': proba[ind], 'label': label[ind]})
                     else:
                         raise ValueError('Incorrect evaluation split.')
