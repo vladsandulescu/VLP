@@ -18,6 +18,7 @@ python ./vlp/run_img2txt_dist.py \
   --tasks hm \
   --num_train_epochs 5 \
   --learning_rate 2e-5 \
+  --warmup_proportion 0.025 \
   --new_segment_ids \
   --always_truncate_tail \
   --amp \
