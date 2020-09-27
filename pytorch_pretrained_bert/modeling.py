@@ -41,6 +41,7 @@ import torch.nn.functional as F
 
 from .file_utils import cached_path
 from .loss import LabelSmoothingLoss
+from .attention import MultiheadAttention
 # import visdom
 
 logger = logging.getLogger(__name__)
@@ -977,6 +978,23 @@ class BertPreTrainingPairRel(nn.Module):
         # .mul_(-1.0): objective to loss
         return F.logsigmoid(pair_score * pair_pos_neg_mask.type_as(pair_score)).mul_(-1.0)
 
+""" for VLP, based on Uniter paired attention """
+class AttentionPool(nn.Module):
+    """ attention pooling layer """
+    def __init__(self, hidden_size, drop=0.0):
+        super().__init__()
+        self.fc = nn.Sequential(nn.Linear(hidden_size, 1), nn.ReLU())
+        self.dropout = nn.Dropout(drop)
+
+    def forward(self, input_, mask=None):
+        """input: [B, T, D], mask = [B, T]"""
+        score = self.fc(input_).squeeze(-1)
+        if mask is not None:
+            mask = mask.to(dtype=input_.dtype) * -1e4
+            score = score + mask
+        norm_score = self.dropout(F.softmax(score, dim=1))
+        output = norm_score.unsqueeze(1).matmul(input_).squeeze(1)
+        return output
 
 """ for VLP, based on UniLM """
 class BertForPreTrainingLossMask(PreTrainedBertModel):
@@ -1033,12 +1051,27 @@ class BertForPreTrainingLossMask(PreTrainedBertModel):
                                        nn.Dropout(config.hidden_dropout_prob),
                                        nn.Linear(config.hidden_size, 2))
             self.hm_crit = nn.CrossEntropyLoss()
+        elif tasks == 'hm-paired-attn':
+            self.attn1 = MultiheadAttention(config.hidden_size,
+                                            config.num_attention_heads,
+                                            config.attention_probs_dropout_prob)
+            self.attn2 = MultiheadAttention(config.hidden_size,
+                                            config.num_attention_heads,
+                                            config.attention_probs_dropout_prob)
+            self.fc = nn.Sequential(
+                nn.Linear(2 * config.hidden_size, config.hidden_size),
+                nn.ReLU(),
+                nn.Dropout(config.hidden_dropout_prob))
+            self.attn_pool = AttentionPool(config.hidden_size,
+                                           config.attention_probs_dropout_prob)
+            self.ans_classifier = nn.Linear(2 * config.hidden_size, 2)
+            self.hm_crit = nn.CrossEntropyLoss()
 
 
     def forward(self, vis_feats, vis_pe, input_ids, token_type_ids=None, attention_mask=None, masked_lm_labels=None,
                 ans_labels=None, next_sentence_label=None, masked_pos=None, masked_weights=None, task_idx=None,
                 vis_masked_pos=[], mask_image_regions=False, drop_worst_ratio=0.2,
-                vqa_inference=False, hm_inference=False):
+                vqa_inference=False, hm_inference=False, hm_paired_attn_inference=False):
 
         vis_feats = self.vis_embed(vis_feats) # image region features
         vis_pe = self.vis_pe_embed(vis_pe) # image region positional encodings
@@ -1063,6 +1096,39 @@ class BertForPreTrainingLossMask(PreTrainedBertModel):
             hm_embed = pooled_output
             hm_pred = self.ans_classifier(hm_embed)
             probs = F.softmax(hm_pred, dim=1)
+            proba, label = probs[:, 1], probs.argmax(dim=1).to(dtype=torch.int)
+            return proba, label
+        # HM with paired attention inference
+        elif hm_paired_attn_inference:
+            assert (ans_labels == None)
+            sequence_output, pooled_output = self.bert(vis_feats, vis_pe, input_ids, token_type_ids,
+                                                       attention_mask, output_all_encoded_layers=False,
+                                                       len_vis_input=self.len_vis_input)
+
+            # separate left image and right image
+            bs, tl, d = sequence_output.size()
+            left_out, right_out = sequence_output.contiguous().view(
+                bs // 2, tl * 2, d).chunk(2, dim=1)
+            # bidirectional attention
+            mask = attention_mask[:, 0] == 0 # select first mask as they all the same
+            left_mask, right_mask = mask.contiguous().view(bs // 2, tl * 2
+                                                           ).chunk(2, dim=1)
+            left_out = left_out.transpose(0, 1)
+            right_out = right_out.transpose(0, 1)
+            l2r_attn, _ = self.attn1(left_out, right_out, right_out,
+                                     key_padding_mask=right_mask)
+            r2l_attn, _ = self.attn2(right_out, left_out, left_out,
+                                     key_padding_mask=left_mask)
+            left_out = self.fc(torch.cat([l2r_attn, left_out], dim=-1)
+                               ).transpose(0, 1)
+            right_out = self.fc(torch.cat([r2l_attn, right_out], dim=-1)
+                                ).transpose(0, 1)
+            # attention pooling and final prediction
+            left_out = self.attn_pool(left_out, left_mask)
+            right_out = self.attn_pool(right_out, right_mask)
+            logits = self.ans_classifier(torch.cat([left_out, right_out], dim=-1))
+
+            probs = F.softmax(logits, dim=1)
             proba, label = probs[:, 1], probs.argmax(dim=1).to(dtype=torch.int)
             return proba, label
 
@@ -1166,6 +1232,35 @@ class BertForPreTrainingLossMask(PreTrainedBertModel):
             target = ans_labels.cuda()
             hm_loss = self.hm_crit(hm_pred, target)
             return masked_lm_loss.new(1).fill_(0), vis_pretext_loss, hm_loss  # works better when combined with max_pred=1
+        elif self.tasks == 'hm-paired-attn':
+            assert (ans_labels is not None)
+
+            # separate left image and right image
+            bs, tl, d = sequence_output.size()
+            left_out, right_out = sequence_output.contiguous().view(
+                bs // 2, tl * 2, d).chunk(2, dim=1)
+            # bidirectional attention
+            mask = attention_mask[:, 0] == 0 # select first mask as they all the same
+            left_mask, right_mask = mask.contiguous().view(bs // 2, tl * 2
+                                                           ).chunk(2, dim=1)
+            left_out = left_out.transpose(0, 1)
+            right_out = right_out.transpose(0, 1)
+            l2r_attn, _ = self.attn1(left_out, right_out, right_out,
+                                     key_padding_mask=right_mask)
+            r2l_attn, _ = self.attn2(right_out, left_out, left_out,
+                                     key_padding_mask=left_mask)
+            left_out = self.fc(torch.cat([l2r_attn, left_out], dim=-1)
+                               ).transpose(0, 1)
+            right_out = self.fc(torch.cat([r2l_attn, right_out], dim=-1)
+                                ).transpose(0, 1)
+            # attention pooling and final prediction
+            left_out = self.attn_pool(left_out, left_mask)
+            right_out = self.attn_pool(right_out, right_mask)
+            logits = self.ans_classifier(torch.cat([left_out, right_out], dim=-1))
+
+            target = ans_labels.cuda()
+            hm_loss = self.hm_crit(logits, target)
+            return masked_lm_loss.new(1).fill_(0), vis_pretext_loss, hm_loss
         else:
             return masked_lm_loss, vis_pretext_loss, masked_lm_loss.new(1).fill_(0)
 

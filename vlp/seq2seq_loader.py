@@ -19,6 +19,7 @@ import os
 import imghdr
 import numpy as np
 import h5py
+import pandas as pd
 
 
 def truncate_tokens_pair(tokens_a, tokens_b, max_len, max_len_a=0, max_len_b=0, trunc_seg=None, always_truncate_tail=False):
@@ -80,6 +81,14 @@ class Img2txtDataset(torch.utils.data.Dataset):
         self.test_mode = (split == 'test')
         self.image_sets = [iset.strip() for iset in split.split('+')]
         self.data_sets = [os.path.join(file_src[0], '{}.jsonl'.format(iset)) for iset in self.image_sets]
+
+        self.enable_paired = tasks.__contains__('paired')
+        if self.enable_paired:
+            df_captions = pd.read_csv(os.path.join(file_src[0], 'im2txt/df.csv'))
+            df_captions['id'] = df_captions['id'].str.replace(os.path.join(file_src[0], 'img/'), '').str.replace(
+                '.png', '')
+            df_captions['caption'] = df_captions['cap0']
+            self.df_captions = df_captions[['id', 'caption']]
 
         # read the file into memory
         self.ex_list = []
@@ -172,17 +181,48 @@ class Img2txtDataset(torch.utils.data.Dataset):
                     text_tk = tokenizer.tokenize(item['text'])
                     label_tk = {'label': item['label']} if not self.test_mode else {'label': None}
                     self.ex_list.append((src_tk, text_tk, label_tk))
+        elif tasks == 'hm-paired-attn':
+            for file_s in self.data_sets:
+                data = [json.loads(line, parse_int=self.parse_img_id)
+                             for line in open(file_s).read().splitlines()]
+
+                for item in data:
+                    if enable_butd:
+                        src_tk = os.path.join(image_root, item['id'] + '.png')
+                    else:
+                        raise NotImplementedError
+                    text_tk = tokenizer.tokenize(item['text'])
+                    # im2txt inferred caption
+                    im2txt_caption = self.get_im2txt(item['id'])
+                    im2text_tk = tokenizer.tokenize(im2txt_caption)
+
+                    label_tk = {'label': item['label']} if not self.test_mode else {'label': None}
+                    self.ex_list.append((src_tk, text_tk, im2text_tk, label_tk))
 
         print('Load {0} documents'.format(len(self.ex_list)))
 
     def __len__(self):
         return len(self.ex_list)
 
+    def get_im2txt(self, img_id):
+        if len(img_id) == 4:
+            img_id = "0" + str(img_id)
+        else:
+            img_id = str(img_id)
+        return self.df_captions.query('id==@img_id')[['caption']].values[0][0]
+
     def __getitem__(self, idx):
-        instance = self.ex_list[idx]
         proc = choices(self.bi_uni_pipeline, weights=[self.s2s_prob, self.bi_prob])[0]
-        instance = proc(instance)
-        return instance
+
+        instance = self.ex_list[idx]
+        if self.enable_paired:
+            src_tk, text_tk, im2text_tk, label_tk = instance
+            instance_left = proc((src_tk, text_tk, label_tk))
+            instance_right = proc((src_tk, im2text_tk, label_tk))
+            return instance_left[:-1], instance_right[:-1], label_tk
+        else:
+            instance = proc(instance)
+            return instance
 
     def __iter__(self):  # iterator to load data
         for __ in range(math.ceil(len(self.ex_list) / float(self.batch_size))):

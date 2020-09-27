@@ -24,12 +24,12 @@ from pytorch_pretrained_bert.tokenization import BertTokenizer, WhitespaceTokeni
 from pytorch_pretrained_bert.modeling import BertForPreTrainingLossMask, BertForSeq2SeqDecoder
 from pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
 
-from vlp.loader_utils import batch_list_to_batch_tensors
+from vlp.loader_utils import batch_list_to_batch_tensors, batch_list_to_batch_tensors_paired
 import vlp.seq2seq_loader as seq2seq_loader
 from vlp.scst_utils import *
 from misc.data_parallel import DataParallelImbalance
 
-import eval_hm
+import eval_hm, eval_hm_pa
 
 
 def _get_max_epoch_model(output_dir):
@@ -186,7 +186,7 @@ def main():
     parser.add_argument('--region_bbox_file', default='coco_detection_vg_thresh0.2_feat_gvd_checkpoint_trainvaltest.h5', type=str)
     parser.add_argument('--region_det_file_prefix', default='feat_cls_1000/coco_detection_vg_100dets_gvd_checkpoint_trainval', type=str)
     parser.add_argument('--tasks', default='img2txt',
-                        help='img2txt | vqa2 | hm')
+                        help='img2txt | vqa2 | hm | hm-paired-attn')
     parser.add_argument('--relax_projection',
                         action='store_true',
                         help="Use different projection layers for tasks.")
@@ -202,7 +202,7 @@ def main():
     args.dist_url = args.dist_url.replace('[PT_OUTPUT_DIR]', args.output_dir)
 
     # arguments inspection
-    assert(args.tasks in ('img2txt', 'vqa2', 'hm'))
+    assert(args.tasks in ('img2txt', 'vqa2', 'hm', 'hm-paired-attn'))
     assert args.enable_butd == True, 'only support region attn! featmap attn deprecated'
     assert (not args.scst) or args.dataset == 'coco', 'scst support on coco only!'
     if args.scst:
@@ -213,7 +213,7 @@ def main():
     if args.enable_butd:
         assert(args.len_vis_input == 100)
         args.region_bbox_file = os.path.join(args.image_root, args.region_bbox_file)
-        args.region_det_file_prefix = os.path.join(args.image_root, args.region_det_file_prefix) if args.dataset in ('cc', 'coco', 'hm') and args.region_det_file_prefix != '' else ''
+        args.region_det_file_prefix = os.path.join(args.image_root, args.region_det_file_prefix) if args.dataset in ('cc', 'coco', 'hm', 'hm-paired') and args.region_det_file_prefix != '' else ''
 
     # output config
     os.makedirs(args.output_dir, exist_ok=True)
@@ -278,7 +278,7 @@ def main():
             mode="s2s", len_vis_input=args.len_vis_input,
             vis_mask_prob=args.vis_mask_prob, enable_butd=args.enable_butd,
             region_bbox_file=args.region_bbox_file, region_det_file_prefix=args.region_det_file_prefix,
-            local_rank=args.local_rank, load_vqa_ann=(args.tasks=='vqa2'), load_hm_ann=(args.tasks=='hm'))]
+            local_rank=args.local_rank, load_vqa_ann=(args.tasks=='vqa2'), load_hm_ann=(args.tasks.__contains__('hm')))]
         bi_uni_pipeline.append(seq2seq_loader.Preprocess4Seq2seq(args.max_pred, args.mask_prob,
             list(tokenizer.vocab.keys()), tokenizer.convert_tokens_to_ids, args.max_seq_length,
             new_segment_ids=args.new_segment_ids, truncate_config={
@@ -287,7 +287,7 @@ def main():
             mode="bi", len_vis_input=args.len_vis_input,
             vis_mask_prob=args.vis_mask_prob, enable_butd=args.enable_butd,
             region_bbox_file=args.region_bbox_file, region_det_file_prefix=args.region_det_file_prefix,
-            local_rank=args.local_rank, load_vqa_ann=(args.tasks=='vqa2'), load_hm_ann=(args.tasks=='hm')))
+            local_rank=args.local_rank, load_vqa_ann=(args.tasks=='vqa2'), load_hm_ann=(args.tasks.__contains__('hm'))))
 
         train_dataset = seq2seq_loader.Img2txtDataset(
             args.src_file, args.image_root, args.split, args.train_batch_size,
@@ -300,9 +300,17 @@ def main():
             train_sampler = RandomSampler(train_dataset, replacement=False)
         else:
             train_sampler = DistributedSampler(train_dataset)
-        train_dataloader = torch.utils.data.DataLoader(train_dataset,
-            batch_size=args.train_batch_size, sampler=train_sampler, num_workers=args.num_workers,
-            collate_fn=batch_list_to_batch_tensors, pin_memory=True)
+
+        if args.tasks.__contains__('paired'):
+            train_dataloader = torch.utils.data.DataLoader(train_dataset,
+                                                           batch_size=args.train_batch_size, sampler=train_sampler,
+                                                           num_workers=args.num_workers,
+                                                           collate_fn=batch_list_to_batch_tensors_paired, pin_memory=True)
+        else:
+            train_dataloader = torch.utils.data.DataLoader(train_dataset,
+                                                           batch_size=args.train_batch_size, sampler=train_sampler,
+                                                           num_workers=args.num_workers,
+                                                           collate_fn=batch_list_to_batch_tensors, pin_memory=True)
 
     # note: args.train_batch_size has been changed to (/= args.gradient_accumulation_steps)
     t_total = int(len(train_dataloader) * args.num_train_epochs * 1. /
@@ -611,7 +619,10 @@ def main():
             if args.world_size > 1:
                 torch.distributed.barrier()
 
-            eval_hm.validate(i_epoch, output_model_file, args, logger)
+            if args.tasks == 'hm':
+                eval_hm.validate(i_epoch, output_model_file, args, logger)
+            elif args.tasks == 'hm-paired-attn':
+                eval_hm_pa.validate(i_epoch, output_model_file, args, logger)
 
 if __name__ == "__main__":
     main()
