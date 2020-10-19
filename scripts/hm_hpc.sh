@@ -3,16 +3,16 @@
 export PYTHONPATH=$PYTHONPATH:./
 
 python ./vlp/run_img2txt_dist.py \
-  --output_dir /work1/paupo/playground/hmm/lib/VLP/output/hm \
+  --output_dir /work1/paupo/playground/hmm/lib/VLP/ph2_output/hm \
   --model_recover_path /work1/paupo/playground/hmm/lib/VLP/model/pretrained_model/cc_g8_lr1e-4_batch512_s0.75_b0.25/model.30.bin \
-  --image_root /work1/paupo/playground/hmm/data/img \
-  --src_file /work1/paupo/playground/hmm/data/ \
-  --region_det_file_prefix /work1/paupo/playground/hmm/data/imgfeat/region_feat_gvd_wo_bgd/feat_cls_1000/hm_detection_vg_100dets_vlp_checkpoint_trainval \
-  --region_bbox_file /work1/paupo/playground/hmm/data/imgfeat/region_feat_gvd_wo_bgd/raw_bbox/hm_detection_vg_100dets_vlp_checkpoint_trainval_bbox.h5 \
+  --image_root /work1/paupo/playground/hmm/data_2/img \
+  --src_file /work1/paupo/playground/hmm/data_2/ \
+  --region_det_file_prefix /work1/paupo/playground/hmm/data_2/imgfeat/region_feat_gvd_wo_bgd/feat_cls_1000/ph2_hm_detection_vg_100dets_vlp_checkpoint_trainval \
+  --region_bbox_file /work1/paupo/playground/hmm/data_2/imgfeat/region_feat_gvd_wo_bgd/raw_bbox/ph2_hm_detection_vg_100dets_vlp_checkpoint_trainval_bbox.h5 \
   --dataset hm \
   --do_train \
-  --split train+dev \
-  --eval_split dev \
+  --split train \
+  --eval_split dev_seen_unseen \
   --train_batch_size 64 \
   --eval_batch_size 64 \
   --tasks hm \
@@ -27,4 +27,5 @@ python ./vlp/run_img2txt_dist.py \
   --bi_prob 1 \
   --mask_prob 0 \
   --max_pred 1 \
-  --num_workers 4
+  --num_workers 4 \
+  --seed 0

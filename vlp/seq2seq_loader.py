@@ -78,13 +78,13 @@ class Img2txtDataset(torch.utils.data.Dataset):
         print('Sample seq2seq {} and bidirectional {}'.format(self.s2s_prob, self.bi_prob))
         assert(self.s2s_prob + self.bi_prob == 1)
 
-        self.test_mode = (split == 'test')
+        self.test_mode = (split.__contains__('test'))
         self.image_sets = [iset.strip() for iset in split.split('+')]
         self.data_sets = [os.path.join(file_src[0], '{}.jsonl'.format(iset)) for iset in self.image_sets]
 
         self.enable_paired = tasks.__contains__('paired')
         if self.enable_paired:
-            df_captions = pd.read_csv(os.path.join(file_src[0], 'im2txt/df.csv'))
+            df_captions = pd.read_csv(os.path.join(file_src[0], 'im2txt/df_phase_2.csv'))
             df_captions['id'] = df_captions['id'].str.replace(os.path.join(file_src[0], 'img/'), '').str.replace(
                 '.png', '')
             df_captions['caption'] = df_captions['cap0']
