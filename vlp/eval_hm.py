@@ -33,8 +33,8 @@ import pandas as pd
 
 def validate(epoch_num, eval_model_recover_path, args, logger):
     val_sets = list(args.eval_split.split('+'))
-    if "test" not in val_sets:
-        val_sets.append("test")
+    if "test_unseen" not in val_sets:
+        val_sets.append("test_unseen")
     for val_set in val_sets:
         validate_set(epoch_num, eval_model_recover_path, args, logger, validation_set=val_set)
 
@@ -69,7 +69,7 @@ def validate_set(epoch_num, eval_model_recover_path, args, logger, validation_se
         'max_len_b': args.max_len_b, 'trunc_seg': 'b', 'always_truncate_tail': True},
         mode="bi", len_vis_input=args.len_vis_input, enable_butd=args.enable_butd,
         region_bbox_file=args.region_bbox_file, region_det_file_prefix=args.region_det_file_prefix,
-        load_vqa_ann=False, load_hm_ann=True, test_mode=(validation_set=='test'))]
+        load_vqa_ann=False, load_hm_ann=True, test_mode=(validation_set.__contains__('test')))]
 
     amp_handle = None
     if args.fp16 and args.amp:
@@ -126,10 +126,10 @@ def validate_set(epoch_num, eval_model_recover_path, args, logger, validation_se
         with tqdm(total=total_batch) as pbar:
             while next_i < len(input_lines):
                 _chunk = input_lines[next_i:next_i + args.eval_batch_size]
-                if validation_set == 'dev':
+                if validation_set.__contains__('dev'):
                     buf = [(x[0], x[1], x[2]) for x in _chunk]
                     buf_id = [(x[0], x[2]) for x in _chunk]
-                elif validation_set == 'test':
+                elif validation_set.__contains__('test'):
                     buf = [(x[0], x[1]) for x in _chunk]
                     buf_id = [(x[0]) for x in _chunk]
                 else:
@@ -144,7 +144,7 @@ def validate_set(epoch_num, eval_model_recover_path, args, logger, validation_se
                     batch = batch_list_to_batch_tensors(
                         instances)
                     batch = [t.to(device) for t in batch]
-                    if not validation_set == 'test':
+                    if not validation_set.__contains__('test'):
                         input_ids, segment_ids, input_mask, lm_label_ids, masked_pos, masked_weights, \
                         is_next, task_idx, img, vis_masked_pos, vis_pe, _ = batch
                     else:
@@ -171,12 +171,12 @@ def validate_set(epoch_num, eval_model_recover_path, args, logger, validation_se
 
                     proba = proba.detach().cpu().numpy()
                     label = label.detach().cpu().numpy()
-                    if validation_set == 'dev':
+                    if validation_set.__contains__('dev'):
                         for ind, (img, target) in enumerate(buf_id):
                             img_id = re.sub(r'^.*?img/', '', img).replace('.png', '')
                             predictions.append({'id': img_id, 'proba': proba[ind], 'label': label[ind],
                                                 'target': target['label']})
-                    elif validation_set == 'test':
+                    elif validation_set.__contains__('test'):
                         for ind, img in enumerate(buf_id):
                             img_id = re.sub(r'^.*?img/', '', img).replace('.png', '')
                             predictions.append({'id': img_id, 'proba': proba[ind], 'label': label[ind]})
@@ -186,7 +186,7 @@ def validate_set(epoch_num, eval_model_recover_path, args, logger, validation_se
                 pbar.update(1)
 
         results = pd.DataFrame(predictions)
-        if validation_set == 'dev':
+        if validation_set.__contains__('dev'):
             acc = (results.target == results.label).sum()/len(results)
             auroc = np.round(roc_auc_score(results.target.values, results.proba.values), 4)
             logger.info('Epoch {}: Val Acc = {}, Val AUROC = {}'.format(epoch_num, acc, auroc))
